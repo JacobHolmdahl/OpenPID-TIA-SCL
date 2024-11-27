@@ -1,0 +1,62 @@
+﻿FUNCTION_BLOCK "LLCCA_ErrAcc"
+TITLE = LLCCA_ErrAcc
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'Jacob Holmdahl'
+FAMILY : LLCCA
+VERSION : 0.1
+//LCC Automation AB / (c)Copyright 2024
+//Released under the MIT License
+   VAR_INPUT 
+      iPv { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // process value
+      iSp { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // setpoint
+      iReset { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Bool;   // reset
+   END_VAR
+
+   VAR_OUTPUT 
+      oErrAcc { ExternalWritable := 'False'} : LReal;   // error accumulator output
+   END_VAR
+
+   VAR 
+      statErrAcc { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : LReal;
+      statRuntime { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : LReal;
+   END_VAR
+
+   VAR_TEMP 
+      tempDeltaTime : LReal;
+   END_VAR
+
+
+BEGIN
+	REGION Description header 
+	    //================================================================================== 
+	    // LCC Automation AB / (c)Copyright 2024
+	    // Released under the MIT License
+	    //---------------------------------------------------------------------------------- 
+	    // Title:            LLCCA_ErrAcc
+	    // Comment/Function: Process value to setpoint error accumulator
+	    // Library/Family:   LLCCA (Library LCC Automation AB)
+	    // Author:           Jacob Holmdahl / jacob.holmdahl@lcc.se
+	    // Target System:    CPU 1510SP-1
+	    // Engineering:      TIA Portal 19 update 3
+	    // Restrictions:     none
+	    // Requirements:     PLC (S7-1200 / S7-1500)
+	    //---------------------------------------------------------------------------------- 
+	    // Change log table: 
+	    // Version     | Date       | Author           | Changes applied
+	    //-------------|------------|------------------|------------------------------------ 
+	    // 001.000.001 | 2024-11-27 | Jacob Holmdahl   | First release
+	    //==================================================================================
+	END_REGION
+	
+	#tempDeltaTime := RUNTIME(#statRuntime);
+	
+	IF #iReset THEN
+	    #statErrAcc := 0.0;
+	ELSE
+	    #statErrAcc := #statErrAcc + (ABS(#iSp - #iPv) * #tempDeltaTime);
+	END_IF;
+	
+	// set output
+	#oErrAcc := #statErrAcc;
+END_FUNCTION_BLOCK
+

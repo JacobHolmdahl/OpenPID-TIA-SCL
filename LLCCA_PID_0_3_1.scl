@@ -1,0 +1,484 @@
+﻿FUNCTION_BLOCK "LLCCA_PID"
+TITLE = LLCCA_PID
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'Jacob Holmdahl'
+FAMILY : LLCCA
+VERSION : 0.0
+//LCC Automation AB / (c)Copyright 2024
+//Released under the MIT License
+   VAR_INPUT 
+      Setpoint : Real;   // controller setpoint
+      Input { ExternalWritable := 'False'} : Real;   // current value from the process
+      ManualValue : Real;   // manual value
+      Reset : Bool;   // reset i term and all filters
+   END_VAR
+
+   VAR_OUTPUT 
+      Out { ExternalWritable := 'False'} : Real;   // output value
+      Terms { ExternalWritable := 'False'} : Struct   // controller terms
+         p { ExternalWritable := 'False'} : Real;   // proportional term
+         i { ExternalWritable := 'False'} : Real;   // integral term
+         d { ExternalWritable := 'False'} : Real;   // derivative term
+      END_STRUCT;
+   END_VAR
+
+   VAR_IN_OUT RETAIN
+      ioMode : USInt;   // current mode of operation (0-Inactive, 1-Step tuning, 2-Reserved, 3-Automatic, 4-Manual)
+      ioKp : Real := 1.0;   // proportional gain
+      ioTi : Real := 3.0;   // integral action time [s]
+      ioTd : Real := 0.0;   // derivative action time [s]
+   END_VAR
+
+   VAR 
+      statOut { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;
+   END_VAR
+   VAR RETAIN
+      statAdvanced : Struct
+         outMax : Real := 100.0;   // output value max
+         outMin : Real;   // output value min
+         inputFilter : Real := 0.1;   // input value filter time [s]
+         derivateFilter : Real := 2.0;   // derivative filter time [s]
+         tuningRule : USInt;   // 0:CHR 0% 1:0:CHR 20% 11:ZN fast 12:ZN normal 13:ZN slow
+      END_STRUCT;
+   END_VAR
+   VAR 
+      statStepTuning { ExternalWritable := 'False'} : Struct
+         state { ExternalWritable := 'False'} : USInt;
+         stateInflection { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : USInt;
+         t { ExternalWritable := 'False'} : Real;   // time
+         find_u_max { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // input max
+         find_u_min { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // input min
+         calc_u_dev { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // input deviation
+         calc_u_start { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // input start value
+         find_y_start { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // output start value
+         find_k_inflection { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // inflection point slope
+         find_u_inflection { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // inflection point input
+         find_t_inflection { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // inflection point time
+         calc_m { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // liniar equation
+         calc_dy { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // delta output
+         calc_L { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // apparent dead time
+         calc_A { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;
+         calc_Kc { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;
+         calc_Ti { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;
+         calc_Td { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;
+      END_STRUCT;
+      statErr { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;
+      statRuntime { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : LReal;
+      statIntegralMax { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;
+      statIntegralMin { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;
+      statIntegralSum { ExternalWritable := 'False'} : Real;
+      statMedianFilter { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'; S7_SetPoint := 'False'} : "LLCCA_MedianFilter";
+      statFilterPT1 {InstructionName := 'Filter_PT1'; LibVersion := '1.0'; ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'; S7_SetPoint := 'False'} : Filter_PT1;
+      "statFilterDT1_du/dt" {InstructionName := 'Filter_DT1'; LibVersion := '1.0'; ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'; S7_SetPoint := 'False'} : Filter_DT1;
+      "statFilterDT1_d2u/dt2" {InstructionName := 'Filter_DT1'; LibVersion := '1.0'; ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'; S7_SetPoint := 'False'} : Filter_DT1;
+      statMode { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : USInt;
+      statModePrev { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : USInt;
+   END_VAR
+
+   VAR_TEMP 
+      temp_uM : Real;   // input with median filter
+      temp_uF : Real;   // input with PT1 filter
+      temp_dt : Real;   // delta time of the controller
+      "temp_du/dt" : Real;   // first order derivative
+      "temp_d2u/dt2" : Real;   // second order derivative
+      temp_out : Real;
+   END_VAR
+
+
+BEGIN
+	REGION Header
+	    //
+	    //================================================================================== 
+	    // LCC Automation AB / (c)Copyright 2024
+	    // Released under the MIT License
+	    //---------------------------------------------------------------------------------- 
+	    // Title:            LLCCA_PID
+	    // Comment/Function: PID Controller with step tuning
+	    // Library/Family:   LLCCA (Library LCC Automation AB)
+	    // Author:           Jacob Holmdahl / jacob.holmdahl@lcc.se
+	    // Target System:    CPU 1510SP-1
+	    // Engineering:      TIA Portal 19 update 3
+	    // Restrictions:     none
+	    // Requirements:     PLC (S7-1200 / S7-1500)
+	    //---------------------------------------------------------------------------------- 
+	    // Change log table: 
+	    // Version     | Date       | Author           | Changes applied
+	    //-------------|------------|------------------|------------------------------------ 
+	    // 000.002.000 | 2024-10-22 | Jacob Holmdahl   | PID with integral anti windup
+	    // 000.003.000 | 2024-11-10 | Jacob Holmdahl   | CHR and ZN step tuning
+	    // 000.003.001 | 2024-11-27 | Jacob Holmdahl   | First development release
+	    //==================================================================================
+	    //
+	    // Known issues
+	    // The step tuning only works if the process (input) is very stable.
+	    // An abort mechanism is needed to stop tuning if the process is or becomes unstable.
+	    //
+	    // Information
+	    // The terminology of some variables and functions is taken from the Siemens PID_Compact
+	    // controller.
+	    // 
+	END_REGION
+	
+	REGION Save previous mode
+	    
+	    // one cycle mode change 
+	    IF #ioMode <> #statMode THEN
+	        #statModePrev := #statMode;
+	        #statMode := #ioMode;
+	        
+	        // init step tuning
+	        IF #statMode = 1 THEN
+	            #statStepTuning.state := 0;
+	            #statStepTuning.stateInflection := 0;
+	        END_IF;
+	        
+	    END_IF;
+	    
+	END_REGION
+	
+	REGION Delta time
+	    // calculate the time from previous call = controller cycle time
+	    #temp_dt := LREAL_TO_REAL(RUNTIME(#statRuntime));
+	END_REGION
+	
+	REGION Filter and derivatives
+	    
+	    // derivate filter min
+	    IF #statAdvanced.derivateFilter < 0.1 THEN
+	        #statAdvanced.derivateFilter := 0.1;
+	    END_IF;
+	    
+	    // filter setpoints
+	    #statFilterPT1.Lag := #statAdvanced.inputFilter;
+	    #"statFilterDT1_du/dt".Lag := #statAdvanced.derivateFilter;
+	    #"statFilterDT1_d2u/dt2".Lag := #statAdvanced.derivateFilter;
+	    
+	    // input value median filter
+	    #statMedianFilter(iVal := #Input,
+	                      iReset := #Reset,
+	                      oVal => #temp_uM);
+	    
+	    // reset all filters
+	    IF #Reset THEN
+	        #statFilterPT1.SubstituteOutput := #Input;
+	        #"statFilterDT1_du/dt".SubstituteOutput := 0.0;
+	        #"statFilterDT1_d2u/dt2".SubstituteOutput := 0.0;
+	    END_IF;
+	    
+	    // input value filter PT1
+	    #statFilterPT1(Input := #temp_uM,
+	                   Reset := #Reset,
+	                   Output => #temp_uF);
+	    
+	    // first order derivative
+	    // derivate filter DT1
+	    // returns the slope
+	    #"statFilterDT1_du/dt"(Input := #temp_uF,
+	                     Reset := #Reset,
+	                     Output => #"temp_du/dt");
+	    
+	    // second order derivative
+	    // derivate filter DT1 of the first derivate filter DT1
+	    // returns the acceleration of the slope
+	    #"statFilterDT1_d2u/dt2"(Input := #"temp_du/dt",
+	                     Reset := #Reset,
+	                     Output => #"temp_d2u/dt2");
+	    
+	END_REGION
+	
+	REGION Modes
+	    
+	    CASE #statMode OF
+	        0:  // Inactive
+	            REGION Inactive
+	                #statOut := 0.0;
+	            END_REGION
+	            
+	        1:  // Step tuning
+	            
+	            // The step tuning is designed to work with a FOPDT process model
+	            // FOPDT stands for First Order Plus Dead Time
+	            // First Order: This refers to a system that responds to a change in input with a gradual, exponential approach to a new steady state.
+	            // Dead Time: This represents a delay between when you make a change to the input and when you see any effect on the output. 
+	            
+	            REGION Step tuning
+	                
+	                CASE #statStepTuning.state OF
+	                    0:
+	                        
+	                        REGION Initialize tuning
+	                            
+	                            // init tuning variables
+	                            #statStepTuning.find_u_max := #temp_uF;
+	                            #statStepTuning.find_u_min := #temp_uF;
+	                            #statStepTuning.calc_u_dev := 0.0;
+	                            #statStepTuning.calc_u_start := 0.0;
+	                            #statStepTuning.find_k_inflection := 0.0;
+	                            #statStepTuning.find_u_inflection := 0.0;
+	                            #statStepTuning.find_t_inflection := 0.0;
+	                            #statStepTuning.calc_m := 0.0;
+	                            #statStepTuning.calc_L := 0.0;
+	                            #statStepTuning.calc_Kc := 0.0;
+	                            #statStepTuning.calc_Ti := 0.0;
+	                            #statStepTuning.calc_Td := 0.0;
+	                            #statStepTuning.t := 5.0;
+	                            
+	                            // transition
+	                            #statStepTuning.state := 1;
+	                            
+	                        END_REGION
+	                        
+	                    1:
+	                        
+	                        REGION Calculate the standard deviation
+	                            
+	                            // find min and max input
+	                            IF #temp_uF > #statStepTuning.find_u_max THEN
+	                                #statStepTuning.find_u_max := #temp_uF;
+	                            END_IF;
+	                            IF #temp_uF < #statStepTuning.find_u_min THEN
+	                                #statStepTuning.find_u_min := #temp_uF;
+	                            END_IF;
+	                            
+	                            // calculate the standard deviation
+	                            #statStepTuning.calc_u_dev := #statStepTuning.find_u_max - #statStepTuning.find_u_min;
+	                            
+	                            // transition
+	                            // timer run out / calculate starting point
+	                            IF #statStepTuning.t <= 0.0 THEN
+	                                #statStepTuning.t := 0.0;
+	                                
+	                                // adjust derivate filter to coresponting deviation
+	                                #statAdvanced.derivateFilter := #statStepTuning.calc_u_dev * 40.0;
+	                                #statAdvanced.derivateFilter := #statStepTuning.calc_u_dev * 40.0;
+	                                
+	                                // save starting point
+	                                #statStepTuning.calc_u_start := #statStepTuning.find_u_min + #statStepTuning.calc_u_dev / 2;
+	                                #statStepTuning.find_k_inflection := #"temp_du/dt"; // save slope
+	                                
+	                                // save start output
+	                                #statStepTuning.find_y_start := #statOut;
+	                                
+	                                // increase output to make a step
+	                                #statOut := #statAdvanced.outMax;
+	                                
+	                                // change state
+	                                #statStepTuning.state := 2;
+	                            ELSE
+	                                // decrease step timer
+	                                #statStepTuning.t := #statStepTuning.t - #temp_dt;
+	                            END_IF;
+	                            
+	                        END_REGION
+	                        
+	                    2:
+	                        
+	                        REGION Find the point of inflection
+	                            
+	                            // terminology
+	                            // L = Deadtime ( Can also be called τ in some documantations )
+	                            // T = apparent time constant
+	                            // y = output
+	                            
+	                            // linear equation
+	                            // u = kt + m ( u=pv , t=time )
+	                            // k = u2-u1 / t2-t1 = du / dt
+	                            
+	                            // finding inflection point = k
+	                            IF #"temp_du/dt" > #statStepTuning.find_k_inflection THEN
+	                                #statStepTuning.find_k_inflection := #"temp_du/dt";
+	                                #statStepTuning.find_u_inflection := #temp_uF;
+	                                #statStepTuning.find_t_inflection := #statStepTuning.t;
+	                            END_IF;
+	                            
+	                            // calculate m from inflection point
+	                            // u=kt+m => m=u-kt 
+	                            #statStepTuning.calc_m := #statStepTuning.find_u_inflection - (#statStepTuning.find_k_inflection * #statStepTuning.find_t_inflection);
+	                            
+	                            // calculate L, the "apparent dead time" with u=kt+m => t=u-m/k at the staring level.
+	                            #statStepTuning.calc_L := (#statStepTuning.calc_u_start - #statStepTuning.calc_m) / #statStepTuning.find_k_inflection;
+	                            
+	                            // calculate delta y (delta output)
+	                            #statStepTuning.calc_dy := #statAdvanced.outMax - #statStepTuning.find_y_start;
+	                            
+	                            // A = approximation of KL/T
+	                            #statStepTuning.calc_A := #statStepTuning.calc_u_start - #statStepTuning.calc_m;
+	                            
+	                            // increase timer / tuning time t
+	                            #statStepTuning.t := #statStepTuning.t + #temp_dt;
+	                            
+	                            // start tuning
+	                            IF #statStepTuning.stateInflection = 0 AND #"statFilterDT1_du/dt".Output > 0.1 THEN
+	                                #statStepTuning.stateInflection := 1;
+	                            END_IF;
+	                            
+	                            // end tuning
+	                            IF #statStepTuning.stateInflection = 1 AND #"statFilterDT1_d2u/dt2".Output < 0.0 THEN
+	                                #statStepTuning.stateInflection := 2;
+	                            END_IF;
+	                            
+	                            // transition to "Tuning successful"
+	                            IF #statStepTuning.stateInflection = 2 THEN
+	                                #statStepTuning.state := 3;
+	                            END_IF;
+	                            
+	                            
+	                            
+	                            CASE #statAdvanced.tuningRule OF
+	                                    
+	                                0: // Chien–Hrones–Reswick - tuning for disturbance rejection - with 0% overshot
+	                                    #statStepTuning.calc_Kc := (0.95 * #statStepTuning.calc_dy) / #statStepTuning.calc_A;
+	                                    #statStepTuning.calc_Ti := 2.40 * #statStepTuning.calc_L;
+	                                    #statStepTuning.calc_Td := 0.42 * #statStepTuning.calc_L;
+	                                1: // Chien–Hrones–Reswick - tuning for disturbance rejection - with 20% overshot
+	                                    #statStepTuning.calc_Kc := (1.20 * #statStepTuning.calc_dy) / #statStepTuning.calc_A;
+	                                    #statStepTuning.calc_Ti := 2.00 * #statStepTuning.calc_L;
+	                                    #statStepTuning.calc_Td := 0.42 * #statStepTuning.calc_L;
+	                                11:  // Ziegler-Nichols - Fast Performance
+	                                    #statStepTuning.calc_Kc := (1.20 * #statStepTuning.calc_dy) / #statStepTuning.calc_A;
+	                                    #statStepTuning.calc_Ti := 2.00 * #statStepTuning.calc_L;
+	                                    #statStepTuning.calc_Td := 0.50 * #statStepTuning.calc_L;
+	                                12:  // Ziegler-Nichols - Normal Performance
+	                                    #statStepTuning.calc_Kc := (0.53 * #statStepTuning.calc_dy) / #statStepTuning.calc_A;
+	                                    #statStepTuning.calc_Ti := 4.00 * #statStepTuning.calc_L;
+	                                    #statStepTuning.calc_Td := 0.80 * #statStepTuning.calc_L;
+	                                13:  // Ziegler-Nichols - Slow Performance
+	                                    #statStepTuning.calc_Kc := (0.32 * #statStepTuning.calc_dy) / #statStepTuning.calc_A;
+	                                    #statStepTuning.calc_Ti := 4.00 * #statStepTuning.calc_L;
+	                                    #statStepTuning.calc_Td := 0.80 * #statStepTuning.calc_L;
+	                                    
+	                                ELSE  // Statement section ELSE
+	                                    
+	                                    #statAdvanced.tuningRule := 0;
+	                                    
+	                            END_CASE;
+	                            
+	                        END_REGION
+	                        
+	                        
+	                    3:
+	                        
+	                        REGION Tuning successful
+	                            
+	                            // set new tuning parameters
+	                            #ioKp := #statStepTuning.calc_Kc;
+	                            #ioTi := #statStepTuning.calc_Ti;
+	                            #ioTd := #statStepTuning.calc_Td;
+	                            
+	                            // return to previous mode
+	                            #ioMode := #statModePrev;
+	                            
+	                        END_REGION
+	                        
+	                    4:
+	                        
+	                        REGION Tuning not successful
+	                            
+	                            // return to previous mode
+	                            #ioMode := #statModePrev;
+	                            
+	                        END_REGION
+	                        
+	                    ELSE  // error
+	                        ;
+	                END_CASE;
+	                
+	            END_REGION
+	            
+	        2:  // Reserved for future mode
+	            REGION Reserved for future mode
+	                
+	                // prohibited mode - inactivate controller
+	                #ioMode := 0;
+	                
+	            END_REGION
+	            
+	        3:  // Automatic
+	            REGION Automatic
+	                
+	                // error calculation
+	                #statErr := #Setpoint - #temp_uF;
+	                
+	                REGION PID terms
+	                    
+	                    // proprtional gain term
+	                    #Terms.p := #ioKp * #statErr;
+	                    
+	                    // derivate term
+	                    #Terms.d := - #ioKp * #ioTd * #"temp_du/dt";
+	                    
+	                    // integral sum
+	                    #statIntegralSum := #statIntegralSum + ((#statErr * #temp_dt) / #ioTi);
+	                    
+	                    // integral reset
+	                    IF #Reset THEN
+	                        #statIntegralSum := 0.0;
+	                    END_IF;
+	                    
+	                    REGION Anti-integral windup
+	                        
+	                        // integral max and min
+	                        #statIntegralMax := (#statAdvanced.outMax / #ioKp) - (#Terms.d / #ioKp) - #statErr;
+	                        #statIntegralMin := (#statAdvanced.outMin / #ioKp) - (#Terms.d / #ioKp) - #statErr;
+	                        
+	                        // integral max with positive error
+	                        IF #statIntegralSum >= #statIntegralMax AND #statErr > 0.0 THEN
+	                            #statIntegralSum := #statIntegralMax;
+	                        END_IF;
+	                        
+	                        // integral mmin with negative error
+	                        IF #statIntegralSum <= #statIntegralMin AND #statErr < 0.0 THEN
+	                            #statIntegralSum := #statIntegralMin;
+	                        END_IF;
+	                    END_REGION
+	                    
+	                    // integral term
+	                    IF #ioTi > 0.0 THEN
+	                        #Terms.i := #ioKp * #statIntegralSum;
+	                    ELSE
+	                        #ioTi := 0.0;
+	                        #Terms.i := 0.0;
+	                    END_IF;
+	                    
+	                END_REGION
+	                
+	                REGION Output
+	                    
+	                    // calculate temporary output
+	                    #temp_out := #Terms.p + #Terms.i + #Terms.d;
+	                    
+	                    // min and max limit
+	                    IF #temp_out < #statAdvanced.outMin THEN
+	                        #temp_out := #statAdvanced.outMin;
+	                    ELSIF #temp_out > #statAdvanced.outMax THEN
+	                        #temp_out := #statAdvanced.outMax;
+	                    END_IF;
+	                    
+	                    // set output vaiable
+	                    #statOut := #temp_out;
+	                    
+	                END_REGION
+	                
+	            END_REGION
+	            
+	        4:  // Manual
+	            REGION Manual
+	                
+	                // set manual output
+	                #statOut := #ManualValue;
+	                
+	            END_REGION
+	            
+	        ELSE  // prohibited mode - inactivate controller
+	            
+	            #ioMode := 0;
+	            
+	    END_CASE;
+	    
+	END_REGION
+	
+	REGION Output value
+	    #Out := #statOut;
+	END_REGION
+END_FUNCTION_BLOCK
+

@@ -1,0 +1,95 @@
+﻿FUNCTION_BLOCK "LLCCA_MedianFilter"
+TITLE = LLCCA_MedianFilter
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'Jacob Holmdahl'
+FAMILY : LLCCA
+VERSION : 0.0
+//LCC Automation AB / (c)Copyright 2024
+//Released under the MIT License
+   VAR_INPUT 
+      iVal { ExternalWritable := 'False'} : Real;   // input value
+      iReset { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Bool;   // reset
+   END_VAR
+
+   VAR_OUTPUT 
+      oVal { ExternalWritable := 'False'} : Real;   // output value
+   END_VAR
+
+   VAR 
+      statBuffer { ExternalWritable := 'False'} : Array[0..#UNITS] of Real;
+   END_VAR
+
+   VAR_TEMP 
+      findValue : Real;
+      i : Int;
+      j : Int;
+      tempBuffer : Array[0..#UNITS] of Real;
+   END_VAR
+
+   VAR CONSTANT 
+      UNITS : Int := 31;
+   END_VAR
+
+
+BEGIN
+	REGION Description header 
+	    //================================================================================== 
+	    // LCC Automation AB / (c)Copyright 2024
+	    // Released under the MIT License
+	    //---------------------------------------------------------------------------------- 
+	    // Title:            LLCCA_MedianFilter
+	    // Comment/Function: Median filter
+	    // Library/Family:   LLCCA (Library LCC Automation AB)
+	    // Author:           Jacob Holmdahl / jacob.holmdahl@lcc.se
+	    // Target System:    CPU 1510SP-1
+	    // Engineering:      TIA Portal 19 update 3
+	    // Restrictions:     none
+	    // Requirements:     PLC (S7-1200 / S7-1500)
+	    //---------------------------------------------------------------------------------- 
+	    // Change log table: 
+	    // Version     | Date       | Author           | Changes applied
+	    //-------------|------------|------------------|------------------------------------ 
+	    // 001.000.000 | 2024-11-27 | Jacob Holmdahl   | First release
+	    //==================================================================================
+	END_REGION
+	
+	IF #iReset THEN
+	    
+	    // fill buffer with input val
+	    FOR #i := 0 TO #UNITS DO
+	        #statBuffer[#i] := #iVal;
+	    END_FOR;
+	    
+	    // output is set to input
+	    #oVal := #iVal;
+	    
+	ELSE
+	    
+	    // move the static buffer one step
+	    // and fill the temp buffer
+	    FOR #i := #UNITS TO 1 BY -1 DO
+	        #statBuffer[#i] := #statBuffer[#i - 1];
+	        #tempBuffer[#i] := #statBuffer[#i];
+	    END_FOR;
+	    
+	    // save the actual value to the buffers
+	    #statBuffer[0] := #iVal;
+	    #tempBuffer[0] := #iVal;
+	    
+	    // sort the temp buffer
+	    FOR #i := 0 TO #UNITS DO
+	        FOR #j := 0 TO #UNITS - 1 DO
+	            IF #tempBuffer[#j] > #tempBuffer[#j + 1] THEN
+	                #findValue := #tempBuffer[#j];
+	                #tempBuffer[#j] := #tempBuffer[#j + 1];
+	                #tempBuffer[#j + 1] := #findValue;
+	            END_IF;
+	        END_FOR;
+	    END_FOR;
+	    
+	    // set median val output
+	    #oVal := (#tempBuffer[#UNITS / 2] + #tempBuffer[#UNITS / 2 + 1]) / 2;
+	    
+	END_IF;
+END_FUNCTION_BLOCK
+

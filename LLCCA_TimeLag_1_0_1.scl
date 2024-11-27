@@ -1,0 +1,135 @@
+﻿FUNCTION_BLOCK "LLCCA_TimeLag"
+TITLE = LLCCA_TimeLag
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'Jacob Holmdahl'
+FAMILY : LLCCA
+VERSION : 0.0
+//LCC Automation AB / (c)Copyright 2024
+//Released under the MIT License
+   VAR_INPUT 
+      in { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // input value
+      init { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Bool;   // time lag memory = in
+      reset { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Bool;   // time lag memory = 0.0
+   END_VAR
+
+   VAR_OUTPUT 
+      out { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;   // output value
+   END_VAR
+
+   VAR_IN_OUT RETAIN
+      timeLag { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : USInt := 10;   // time lag [s]
+   END_VAR
+
+   VAR 
+      statRuntimeMem { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : LReal;
+      statTimeLag { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Array[0..#TIME_LAG_MAX] of Real;
+      statTimer { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : LReal;
+      statInit { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Bool;
+      statReset { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Bool;
+   END_VAR
+
+   VAR_TEMP 
+      tempCycleTime : LReal;
+      i : USInt;
+   END_VAR
+
+   VAR CONSTANT 
+      TIME_CYCLE : Real := 0.1;
+      TIME_LAG_MAX : USInt := 250;
+   END_VAR
+
+
+BEGIN
+	REGION Description header 
+	    //================================================================================== 
+	    // LCC Automation AB / (c)Copyright 2024
+	    // Released under the MIT License
+	    //---------------------------------------------------------------------------------- 
+	    // Title:            LLCCA_PID
+	    // Comment/Function: The output value is delayed by an adjustable time
+	    // Library/Family:   LLCCA (Library LCC Automation AB)
+	    // Author:           Jacob Holmdahl / jacob.holmdahl@lcc.se
+	    // Target System:    CPU 1510SP-1
+	    // Engineering:      TIA Portal 19 update 3
+	    // Restrictions:     none
+	    // Requirements:     PLC (S7-1200 / S7-1500)
+	    //---------------------------------------------------------------------------------- 
+	    // Change log table: 
+	    // Version     | Date       | Author           | Changes applied
+	    //-------------|------------|------------------|------------------------------------ 
+	    // 001.000.001 | 2024-11-27 | Jacob Holmdahl   | First release
+	    //==================================================================================
+	END_REGION
+	
+	IF #timeLag > 0 THEN
+	  
+	  // run time lag code
+	  
+	  REGION cycleTime
+	    #tempCycleTime := RUNTIME(#statRuntimeMem);
+	  END_REGION
+	  //------------------------------------------------------------------------------------------
+	  REGION init
+	    
+	    IF #init AND NOT #statInit THEN
+	      #statInit := TRUE;
+	      #statTimer := #TIME_CYCLE;
+	      FOR #i := 0 TO #TIME_LAG_MAX DO
+	        #statTimeLag[#i] := #in;
+	      END_FOR;
+	    ELSIF NOT #init THEN
+	      #statInit := FALSE;
+	    END_IF;
+	    
+	  END_REGION
+	  //------------------------------------------------------------------------------------------
+	  REGION reset
+	    
+	    IF #reset AND NOT #statReset THEN
+	      #statReset := TRUE;
+	      #statTimer := #TIME_CYCLE;
+	      FOR #i := 0 TO #TIME_LAG_MAX DO
+	        #statTimeLag[#i] := 0.0;
+	      END_FOR;
+	    ELSIF NOT #reset THEN
+	      #statReset := FALSE;
+	    END_IF;
+	    
+	  END_REGION
+	  //------------------------------------------------------------------------------------------
+	  REGION limits
+	    
+	    // max
+	    IF #timeLag > #TIME_LAG_MAX/10 THEN
+	      #timeLag := #TIME_LAG_MAX/10;
+	    END_IF;
+	    
+	  END_REGION
+	  //------------------------------------------------------------------------------------------
+	  // decrease timer
+	  #statTimer := #statTimer - #tempCycleTime;
+	  
+	  // save value to memory
+	  IF #statTimer < 0.0 THEN
+	    #statTimer := #TIME_CYCLE;
+	    
+	    FOR #i := 0 TO #TIME_LAG_MAX-1 DO
+	      #statTimeLag[#TIME_LAG_MAX - #i] := #statTimeLag[#TIME_LAG_MAX - #i - 1];
+	    END_FOR;
+	    #statTimeLag[0] := #in;
+	    
+	  END_IF;
+	  
+	  // set output
+	  #out := #statTimeLag[#timeLag*10];
+	  
+	ELSE
+	  // no time lag
+	  
+	  // set output
+	  #out := #in;
+	
+	END_IF;
+	
+END_FUNCTION_BLOCK
+

@@ -1,0 +1,198 @@
+﻿FUNCTION_BLOCK "LLCCA_PvSim"
+TITLE = LLCCA_PvSim
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : 'Jacob Holmdahl'
+FAMILY : LLCCA
+VERSION : 0.0
+//LCC Automation AB / (c)Copyright 2024
+//Released under the MIT License
+   VAR_INPUT 
+      enable : Bool;   // enable simulation
+      input : Real;   // input (Output from PID) [%]
+      reset : Bool;   // reset
+   END_VAR
+
+   VAR_OUTPUT 
+      out { ExternalWritable := 'False'} : Real;   // simulated process value [unit]
+      addComp { ExternalWritable := 'False'} : Real;   // additive component [unit/min]
+      subComp { ExternalWritable := 'False'} : Real;   // subtracting component [unit/min]
+   END_VAR
+
+   VAR_IN_OUT RETAIN
+      ioAddFactor : Real := 1.0;   // additive component  factor ( addComp :=  input * addFactor ; 100% * 0.01 = 1 unit/min )
+      ioAddTimeLag : USInt := 1;   // additive component time lag [s]
+      ioAddFilter : Real := 5.0;   // additive component filter [s]
+      ioSubType : USInt;   // 0:start val proportial 1:constant
+      ioSubFactor : Real := 1.0;   // subtracting component factor ( subComp := ( out - subStartVal ) * subFactor ; sub (120 unit - 20 unit *0.01 =  1 unit/min)
+      ioSubTimeLag : USInt;   // subtracting component time lag [s]
+      ioSubFilter : Real;   // subtracting component filter [s]
+      ioSubConstant : Real := 20.0;   // substracting constant
+      ioSubStartValue : Real := 20.0;   // subtracting component start value [unit]
+      ioNoiceFactor : Real := 0.1;   // random noice factor of simulated process value
+   END_VAR
+
+   VAR 
+      statOut { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;
+      statRuntimeMem { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : LReal;
+      statAddTimeLag { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'; S7_SetPoint := 'False'} : "LLCCA_TimeLag";
+      statAddFilter_PT1 {InstructionName := 'Filter_PT1'; LibVersion := '1.0'; ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'; S7_SetPoint := 'False'} : Filter_PT1;
+      statSubTimeLag { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'; S7_SetPoint := 'False'} : "LLCCA_TimeLag";
+      statSubFilter_PT1 {InstructionName := 'Filter_PT1'; LibVersion := '1.0'; ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'; S7_SetPoint := 'False'} : Filter_PT1;
+   END_VAR
+
+   VAR_TEMP 
+      tempDeltaTime : LReal;
+      tempAdd : Real;
+      tempSub : Real;
+      tempRndError : Bool;
+      tempRndStatus : Word;
+      tempRndStatusSub : Word;
+   END_VAR
+
+
+BEGIN
+	REGION Description header 
+	    //================================================================================== 
+	    // LCC Automation AB / (c)Copyright 2024
+	    // Released under the MIT License
+	    //---------------------------------------------------------------------------------- 
+	    // Title:            LLCCA_PvSim
+	    // Comment/Function: Process value simulator
+	    // Library/Family:   LLCCA (Library LCC Automation AB)
+	    // Author:           Jacob Holmdahl / jacob.holmdahl@lcc.se
+	    // Target System:    CPU 1510SP-1
+	    // Engineering:      TIA Portal 19 update 3
+	    // Restrictions:     none
+	    // Requirements:     PLC (S7-1200 / S7-1500)
+	    //---------------------------------------------------------------------------------- 
+	    // Change log table: 
+	    // Version     | Date       | Author           | Changes applied
+	    //-------------|------------|------------------|------------------------------------ 
+	    // 001.000.000 | 2024-11-27 | Jacob Holmdahl   | First release
+	    //==================================================================================
+	END_REGION
+	
+	REGION delta time
+	    #tempDeltaTime := RUNTIME(#statRuntimeMem);
+	END_REGION
+	
+	REGION reset
+	    
+	  IF #reset OR NOT #enable THEN
+	    #statOut := #ioSubStartValue;
+	END_IF;
+	
+	END_REGION
+	
+	REGION limits
+	  
+	  IF #ioAddFilter < 0.00 THEN
+	    #ioAddFilter := 0.00;
+	  END_IF;
+	  
+	  IF #ioSubFilter < 0.00 THEN
+	    #ioSubFilter := 0.00;
+	  END_IF;
+	  
+	END_REGION
+	
+	REGION add component
+	  
+	  #tempAdd := #input / 1.0;
+	  
+	  IF ENO THEN
+	      #tempAdd := #input * #ioAddFactor;
+	  ELSE
+	    #tempAdd := 0.0;
+	  END_IF;
+	
+	END_REGION
+	
+	REGION add timeLag
+	  
+	  #statAddTimeLag(in      := #tempAdd,
+	                  reset   := #reset,
+	                  timeLag := #ioAddTimeLag);
+	  
+	END_REGION
+	
+	REGION add filter
+	  
+	  IF #ioAddFilter > 0.01 THEN
+	    #statAddFilter_PT1.Lag := #ioAddFilter;
+	    
+	    #statAddFilter_PT1(Input            := #statAddTimeLag.out,
+	                       SubstituteOutput := #statAddTimeLag.out,
+	                       Reset            := #reset,
+	                       Output           => #tempAdd);
+	  ELSE
+	    #tempAdd := #statAddTimeLag.out;
+	  END_IF;
+	  
+	  #addComp := #tempAdd;
+	  
+	END_REGION
+	
+	REGION addition
+	  
+	  #statOut := #statOut + ((#tempAdd * LREAL_TO_REAL(#tempDeltaTime)) / 60.0);
+	  
+	END_REGION
+	
+	REGION sub component
+	  
+	  IF #ioSubType = 0 THEN
+	    
+	    #tempSub := (#statOut - #ioSubStartValue) * #ioSubFactor;
+	    
+	  ELSIF #ioSubType = 1 THEN
+	    
+	    IF #statOut > #ioSubStartValue THEN
+	      #tempSub := #ioSubConstant * #ioSubFactor;
+	    ELSE
+	      #statOut := #ioSubStartValue;
+	    END_IF;
+	    
+	  ELSE
+	    #ioSubType := 0;
+	  END_IF;
+	  
+	END_REGION
+	
+	REGION sub timeLag
+	  
+	  #statSubTimeLag(in      := #tempSub,
+	                  reset   := #reset,
+	                  timeLag := #ioSubTimeLag);
+	  
+	END_REGION
+	
+	REGION sub filter
+	  
+	  IF #ioSubFilter > 0.01 THEN
+	    #statSubFilter_PT1.Lag := #ioSubFilter;
+	    
+	    #statSubFilter_PT1(Input            := #statSubTimeLag.out,
+	                       SubstituteOutput := #statSubTimeLag.out,
+	                       Reset            := #reset,
+	                       Output           => #tempSub);
+	  ELSE
+	    #tempSub := #statSubTimeLag.out;
+	  END_IF;
+	  
+	  #subComp := #tempSub;
+	  
+	END_REGION
+	
+	REGION substraction
+	  
+	  #statOut := #statOut - (#tempSub * LREAL_TO_REAL(#tempDeltaTime) / 60.0);
+	
+	END_REGION
+	
+	REGION output and noice
+	  #out := #statOut - (0.5 * #ioNoiceFactor) + #ioNoiceFactor * "LGF_Random_Real"(error => #tempRndError, status => #tempRndStatus, subfunctionStatus => #tempRndStatusSub);
+	END_REGION
+	
+END_FUNCTION_BLOCK
+
