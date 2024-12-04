@@ -41,7 +41,7 @@ Please refer to the LLCCA_PID Quick Start Manual.
 
 **Code Overview**
 
-The provided `LLCCA_PID_x_y_z` file contains the SCL (Structured Control Language) code for the `LLCCA_PID` function block. The code includes:
+The file `LLCCA_PID_x_y_z.scl` contains the SCL (Structured Control Language) code for the `LLCCA_PID` function block. The code includes:
 
 *   **Input Variables:** `Setpoint`, `Input`, `ManualValue`, `Reset`
 *   **Output Variables:** `Out`, `Terms` (structure with `p`, `i`, `d` components)
